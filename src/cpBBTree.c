@@ -27,6 +27,12 @@
 
 static inline cpSpatialIndexClass *Klass(void);
 
+// Maximum depth for the explicit traversal stack used by iterative tree functions.
+// A depth of 256 supports trees with up to 2^256 leaves in the balanced case.
+// In the degenerate (fully unbalanced) case, this limits tree depth to 256, which
+// is still far more than enough for any practical use.
+#define CP_BBTREE_MAX_DEPTH 256
+
 typedef struct Node Node;
 typedef struct Pair Pair;
 
@@ -328,37 +334,82 @@ SubtreeInsert(Node *subtree, Node *leaf, cpBBTree *tree)
 {
 	if(subtree == NULL){
 		return leaf;
-	} else if(NodeIsLeaf(subtree)){
-		return NodeNew(tree, leaf, subtree);
-	} else {
-		cpFloat cost_a = cpBBArea(subtree->B->bb) + cpBBMergedArea(subtree->A->bb, leaf->bb);
-		cpFloat cost_b = cpBBArea(subtree->A->bb) + cpBBMergedArea(subtree->B->bb, leaf->bb);
+	}
+	
+	// Use an iterative approach to avoid stack overflow with deep trees.
+	// We walk down the tree to find the insertion point, recording the path
+	// of ancestors so we can update bounding boxes on the way back up.
+	Node *ancestors[CP_BBTREE_MAX_DEPTH];
+	int ancestorIsB[CP_BBTREE_MAX_DEPTH]; // which child branch was taken
+	int depth = 0;
+	
+	Node *node = subtree;
+	while(!NodeIsLeaf(node)){
+		cpAssertHard(depth < CP_BBTREE_MAX_DEPTH, "BB tree depth exceeded CP_BBTREE_MAX_DEPTH. Tree is too deep.");
+		
+		cpFloat cost_a = cpBBArea(node->B->bb) + cpBBMergedArea(node->A->bb, leaf->bb);
+		cpFloat cost_b = cpBBArea(node->A->bb) + cpBBMergedArea(node->B->bb, leaf->bb);
 		
 		if(cost_a == cost_b){
-			cost_a = cpBBProximity(subtree->A->bb, leaf->bb);
-			cost_b = cpBBProximity(subtree->B->bb, leaf->bb);
+			cost_a = cpBBProximity(node->A->bb, leaf->bb);
+			cost_b = cpBBProximity(node->B->bb, leaf->bb);
 		}
 		
+		ancestors[depth] = node;
 		if(cost_b < cost_a){
-			NodeSetB(subtree, SubtreeInsert(subtree->B, leaf, tree));
+			ancestorIsB[depth] = 1;
+			node = node->B;
 		} else {
-			NodeSetA(subtree, SubtreeInsert(subtree->A, leaf, tree));
+			ancestorIsB[depth] = 0;
+			node = node->A;
+		}
+		depth++;
+	}
+	
+	// node is now a leaf. Create a new internal node joining it with the new leaf.
+	Node *newNode = NodeNew(tree, leaf, node);
+	
+	// Walk back up and attach the new node, updating bounding boxes.
+	if(depth > 0){
+		// Attach the new node to the last ancestor.
+		if(ancestorIsB[depth - 1]){
+			NodeSetB(ancestors[depth - 1], newNode);
+		} else {
+			NodeSetA(ancestors[depth - 1], newNode);
 		}
 		
-		subtree->bb = cpBBMerge(subtree->bb, leaf->bb);
+		// Update bounding boxes for all ancestors.
+		for(int i = depth - 1; i >= 0; i--){
+			ancestors[i]->bb = cpBBMerge(ancestors[i]->bb, leaf->bb);
+		}
+		
 		return subtree;
+	} else {
+		// The root was a leaf; the new node becomes the root.
+		return newNode;
 	}
 }
 
 static void
 SubtreeQuery(Node *subtree, void *obj, cpBB bb, cpSpatialIndexQueryFunc func, void *data)
 {
-	if(cpBBIntersects(subtree->bb, bb)){
-		if(NodeIsLeaf(subtree)){
-			func(obj, subtree->obj, 0, data);
-		} else {
-			SubtreeQuery(subtree->A, obj, bb, func, data);
-			SubtreeQuery(subtree->B, obj, bb, func, data);
+	Node *stack[CP_BBTREE_MAX_DEPTH];
+	int top = 0;
+	
+	stack[top++] = subtree;
+	
+	while(top > 0){
+		Node *node = stack[--top];
+		if(cpBBIntersects(node->bb, bb)){
+			if(NodeIsLeaf(node)){
+				func(obj, node->obj, 0, data);
+			} else {
+				cpAssertHard(top + 1 < CP_BBTREE_MAX_DEPTH, "BB tree depth exceeded CP_BBTREE_MAX_DEPTH in SubtreeQuery.");
+				// Push B first, then A, so that A is processed first (LIFO order)
+				// to maintain the same traversal order as the original recursive version.
+				stack[top++] = node->B;
+				stack[top++] = node->A;
+			}
 		}
 	}
 }
@@ -367,31 +418,62 @@ SubtreeQuery(Node *subtree, void *obj, cpBB bb, cpSpatialIndexQueryFunc func, vo
 static cpFloat
 SubtreeSegmentQuery(Node *subtree, void *obj, cpVect a, cpVect b, cpFloat t_exit, cpSpatialIndexSegmentQueryFunc func, void *data)
 {
-	if(NodeIsLeaf(subtree)){
-		return func(obj, subtree->obj, data);
-	} else {
-		cpFloat t_a = cpBBSegmentQuery(subtree->A->bb, a, b);
-		cpFloat t_b = cpBBSegmentQuery(subtree->B->bb, a, b);
-		
-		if(t_a < t_b){
-			if(t_a < t_exit) t_exit = cpfmin(t_exit, SubtreeSegmentQuery(subtree->A, obj, a, b, t_exit, func, data));
-			if(t_b < t_exit) t_exit = cpfmin(t_exit, SubtreeSegmentQuery(subtree->B, obj, a, b, t_exit, func, data));
+	Node *stack[CP_BBTREE_MAX_DEPTH];
+	int top = 0;
+	
+	stack[top++] = subtree;
+	
+	while(top > 0){
+		Node *node = stack[--top];
+		if(NodeIsLeaf(node)){
+			t_exit = cpfmin(t_exit, func(obj, node->obj, data));
 		} else {
-			if(t_b < t_exit) t_exit = cpfmin(t_exit, SubtreeSegmentQuery(subtree->B, obj, a, b, t_exit, func, data));
-			if(t_a < t_exit) t_exit = cpfmin(t_exit, SubtreeSegmentQuery(subtree->A, obj, a, b, t_exit, func, data));
+			cpFloat t_a = cpBBSegmentQuery(node->A->bb, a, b);
+			cpFloat t_b = cpBBSegmentQuery(node->B->bb, a, b);
+			
+			// Push the farther child first so the nearer child is processed first (LIFO).
+			// This maximizes early pruning via t_exit.
+			if(t_a < t_b){
+				if(t_b < t_exit){
+					cpAssertHard(top < CP_BBTREE_MAX_DEPTH, "BB tree depth exceeded CP_BBTREE_MAX_DEPTH in SubtreeSegmentQuery.");
+					stack[top++] = node->B;
+				}
+				if(t_a < t_exit){
+					cpAssertHard(top < CP_BBTREE_MAX_DEPTH, "BB tree depth exceeded CP_BBTREE_MAX_DEPTH in SubtreeSegmentQuery.");
+					stack[top++] = node->A;
+				}
+			} else {
+				if(t_a < t_exit){
+					cpAssertHard(top < CP_BBTREE_MAX_DEPTH, "BB tree depth exceeded CP_BBTREE_MAX_DEPTH in SubtreeSegmentQuery.");
+					stack[top++] = node->A;
+				}
+				if(t_b < t_exit){
+					cpAssertHard(top < CP_BBTREE_MAX_DEPTH, "BB tree depth exceeded CP_BBTREE_MAX_DEPTH in SubtreeSegmentQuery.");
+					stack[top++] = node->B;
+				}
+			}
 		}
-		
-		return t_exit;
 	}
+	
+	return t_exit;
 }
 
 static void
 SubtreeRecycle(cpBBTree *tree, Node *node)
 {
-	if(!NodeIsLeaf(node)){
-		SubtreeRecycle(tree, node->A);
-		SubtreeRecycle(tree, node->B);
-		NodeRecycle(tree, node);
+	Node *stack[CP_BBTREE_MAX_DEPTH];
+	int top = 0;
+	
+	stack[top++] = node;
+	
+	while(top > 0){
+		Node *current = stack[--top];
+		if(!NodeIsLeaf(current)){
+			cpAssertHard(top + 1 < CP_BBTREE_MAX_DEPTH, "BB tree depth exceeded CP_BBTREE_MAX_DEPTH in SubtreeRecycle.");
+			stack[top++] = current->B;
+			stack[top++] = current->A;
+			NodeRecycle(tree, current);
+		}
 	}
 }
 
@@ -426,17 +508,26 @@ typedef struct MarkContext {
 static void
 MarkLeafQuery(Node *subtree, Node *leaf, cpBool left, MarkContext *context)
 {
-	if(cpBBIntersects(leaf->bb, subtree->bb)){
-		if(NodeIsLeaf(subtree)){
-			if(left){
-				PairInsert(leaf, subtree, context->tree);
+	Node *stack[CP_BBTREE_MAX_DEPTH];
+	int top = 0;
+	
+	stack[top++] = subtree;
+	
+	while(top > 0){
+		Node *node = stack[--top];
+		if(cpBBIntersects(leaf->bb, node->bb)){
+			if(NodeIsLeaf(node)){
+				if(left){
+					PairInsert(leaf, node, context->tree);
+				} else {
+					if(node->STAMP < leaf->STAMP) PairInsert(node, leaf, context->tree);
+					context->func(leaf->obj, node->obj, 0, context->data);
+				}
 			} else {
-				if(subtree->STAMP < leaf->STAMP) PairInsert(subtree, leaf, context->tree);
-				context->func(leaf->obj, subtree->obj, 0, context->data);
+				cpAssertHard(top + 1 < CP_BBTREE_MAX_DEPTH, "BB tree depth exceeded CP_BBTREE_MAX_DEPTH in MarkLeafQuery.");
+				stack[top++] = node->B;
+				stack[top++] = node->A;
 			}
-		} else {
-			MarkLeafQuery(subtree->A, leaf, left, context);
-			MarkLeafQuery(subtree->B, leaf, left, context);
 		}
 	}
 }
@@ -472,11 +563,20 @@ MarkLeaf(Node *leaf, MarkContext *context)
 static void
 MarkSubtree(Node *subtree, MarkContext *context)
 {
-	if(NodeIsLeaf(subtree)){
-		MarkLeaf(subtree, context);
-	} else {
-		MarkSubtree(subtree->A, context);
-		MarkSubtree(subtree->B, context); // TODO: Force TCO here?
+	Node *stack[CP_BBTREE_MAX_DEPTH];
+	int top = 0;
+	
+	stack[top++] = subtree;
+	
+	while(top > 0){
+		Node *node = stack[--top];
+		if(NodeIsLeaf(node)){
+			MarkLeaf(node, context);
+		} else {
+			cpAssertHard(top + 1 < CP_BBTREE_MAX_DEPTH, "BB tree depth exceeded CP_BBTREE_MAX_DEPTH in MarkSubtree.");
+			stack[top++] = node->B;
+			stack[top++] = node->A;
+		}
 	}
 }
 

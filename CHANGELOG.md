@@ -8,6 +8,10 @@ Changes:
 
 - BUG: The wildcard CollisionHandler will be invoked twice when two shapes of
   same type collides (one time in swapped order).
+- BUG: Fix stack overflow in cpBBTree when adding many shapes to a space.
+  Converted all recursive tree traversal functions (SubtreeInsert, SubtreeQuery,
+  SubtreeSegmentQuery, SubtreeRecycle, MarkLeafQuery, MarkSubtree) to iterative
+  implementations.
 
 ## 2.0.0
 
