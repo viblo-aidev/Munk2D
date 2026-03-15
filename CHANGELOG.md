@@ -4,6 +4,8 @@
 
 Changes:
 
+- BUG: Fix stack overflow in cpBBTree when adding many shapes to a space.
+  Converted recursive tree traversal functions to iterative implementations.
 - TEST: Add a first portable CMake/CTest-based C test executable.
 - CI: Run the portable C test suite in the GitHub Actions build matrix.
 - DOC: Document how to build and run the portable test suite with CMake/CTest.
@@ -16,10 +18,6 @@ Changes:
 
 - BUG: The wildcard CollisionHandler will be invoked twice when two shapes of
   same type collides (one time in swapped order).
-- BUG: Fix stack overflow in cpBBTree when adding many shapes to a space.
-  Converted all recursive tree traversal functions (SubtreeInsert, SubtreeQuery,
-  SubtreeSegmentQuery, SubtreeRecycle, MarkLeafQuery, MarkSubtree) to iterative
-  implementations.
 
 ## 2.0.0
 
