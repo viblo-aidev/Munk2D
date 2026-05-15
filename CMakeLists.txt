@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.10)
 
 project(chipmunk)
 
+# Munk2D 2.0.1
+set(MUNK2D_VERSION_MAJOR 2)
+set(MUNK2D_VERSION_MINOR 0)
+set(MUNK2D_VERSION_PATCH 1)
+set(MUNK2D_VERSION "${MUNK2D_VERSION_MAJOR}.${MUNK2D_VERSION_MINOR}.${MUNK2D_VERSION_PATCH}")
+
 # to change the prefix, run cmake with the parameter:
 #   -D CMAKE_INSTALL_PREFIX=/my/prefix
 
@@ -71,6 +77,12 @@ add_subdirectory(src)
 
 if(BUILD_TESTING)
   add_subdirectory(tests)
+endif()
+
+option(BUILD_BENCHMARKS "Build standalone benchmark executables" OFF)
+
+if(BUILD_BENCHMARKS)
+  add_subdirectory(benchmarks)
 endif()
 
 if(BUILD_DEMOS)
