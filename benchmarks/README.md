@@ -38,3 +38,25 @@ Output is CSV:
 ```csv
 version,benchmark,size,init_time,run_time
 ```
+
+## Validation summaries
+
+MunkBench can emit checkpoint summaries for stability/correctness validation:
+
+```sh
+./build/benchmarks/munkbench --summary-json -b N2 -s 25 --checkpoints 0,1,10,100
+```
+
+The JSON includes counts, dynamic body bounds, shape bounds, aggregate position
+and velocity sums, kinetic energy, max velocities, sleeping body counts, and an
+`invalid_values` count for NaN/Inf detection.
+
+## SVG snapshots
+
+A selected benchmark can be rendered to SVG for visual comparison:
+
+```sh
+./build/benchmarks/munkbench -b N2 -s 25 --svg n2-step-100.svg --step 100
+```
+
+Use `--svg -` to write the SVG to stdout.

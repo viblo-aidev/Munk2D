@@ -78,10 +78,14 @@ static void
 usage(const char *argv0)
 {
 	printf("MunkBench - Munk2D benchmark suite\n\n");
-	printf("Usage: %s [-b benchmark ...] [-s size]\n\n", argv0);
+	printf("Usage: %s [-b benchmark ...] [-s size] [--summary-json] [--svg file --step n]\n\n", argv0);
 	printf("Options:\n");
 	printf("  -b, --benchmarks  Run only the named benchmarks.\n");
 	printf("  -s, --size        Size to run. Omit for each benchmark default; use -1 for size sweep.\n");
+	printf("  --summary-json    Emit validation checkpoint summaries as JSON instead of timing CSV.\n");
+	printf("  --checkpoints     Comma-separated step checkpoints for --summary-json. Default: 0,1,10,100,final.\n");
+	printf("  --svg file        Write an SVG snapshot for a single benchmark. Use '-' for stdout.\n");
+	printf("  --step n          Step to render for --svg. Default: benchmark final step.\n");
 	printf("  -h, --help        Show this help.\n");
 }
 
@@ -156,7 +160,11 @@ add_box_shape(cpSpace *space, cpBody *body, cpFloat width, cpFloat height, cpFlo
 static cpShape *
 add_box_shape_bb(cpSpace *space, cpBody *body, cpFloat l, cpFloat b, cpFloat r, cpFloat t, cpFloat density)
 {
-	return add_shape_with_density(space, cpBoxShapeNew2(body, cpBBNew(l, b, r, t), 0.0), density);
+	cpFloat left = cpfmin(l, r);
+	cpFloat right = cpfmax(l, r);
+	cpFloat bottom = cpfmin(b, t);
+	cpFloat top = cpfmax(b, t);
+	return add_shape_with_density(space, cpBoxShapeNew2(body, cpBBNew(left, bottom, right, top), 0.0), density);
 }
 
 static cpShape *
@@ -359,7 +367,7 @@ init_mild_n2(int size, void **state)
 		cpBody *body = add_dynamic_body(space, cpv(-5.0, -1.0));
 		add_box_shape_bb(space, body, -3.0, 3.0, 3.0, 4.0, 2.0);
 		add_box_shape_bb(space, body, -3.0, 4.0, -2.0, 0.0, 2.0);
-		cpSpaceAddShape(space, cpBoxShapeNew2(body, cpBBNew(2.0, 4.0, 3.0, 0.0), 0.0));
+		add_box_shape_bb(space, body, 2.0, 4.0, 3.0, 0.0, 0.0);
 	}
 
 	for(int i = 0; i < size; i++){
@@ -402,7 +410,7 @@ init_multifixture(int size, void **state)
 			cpFloat ps = 2.0*z*bs + bs;
 			add_box_shape_bb(space, body, -bs + ps - 2.0, 3.0, bs + ps - 2.0, 4.0, 2.0/(cpFloat)c);
 			add_box_shape_bb(space, body, -2.0, bs + ps, -1.0, -bs + ps, 2.0/(cpFloat)c);
-			cpSpaceAddShape(space, cpBoxShapeNew2(body, cpBBNew(1.0, bs + ps, 2.0, -bs + ps), 0.0));
+			add_box_shape_bb(space, body, 1.0, bs + ps, 2.0, -bs + ps, 0.0);
 		}
 	}
 
@@ -606,6 +614,415 @@ find_benchmark(const char *name)
 	return NULL;
 }
 
+
+typedef struct Summary {
+	int step;
+	int bodies;
+	int dynamic_bodies;
+	int static_bodies;
+	int kinematic_bodies;
+	int sleeping_bodies;
+	int shapes;
+	int constraints;
+	int invalid_values;
+	cpFloat total_mass;
+	cpFloat total_kinetic_energy;
+	cpFloat max_linear_velocity;
+	cpFloat max_angular_velocity;
+	cpFloat sum_position_x;
+	cpFloat sum_position_y;
+	cpFloat sum_velocity_x;
+	cpFloat sum_velocity_y;
+	cpBB body_bounds;
+	cpBB shape_bounds;
+	cpBool has_body_bounds;
+	cpBool has_shape_bounds;
+} Summary;
+
+static int
+is_bad(cpFloat value)
+{
+	return isnan((double)value) || isinf((double)value);
+}
+
+static void
+summary_add_bad_vect(Summary *summary, cpVect v)
+{
+	if(is_bad(v.x)) summary->invalid_values++;
+	if(is_bad(v.y)) summary->invalid_values++;
+}
+
+static void
+summary_body(cpBody *body, void *data)
+{
+	Summary *summary = (Summary *)data;
+	cpBodyType type = cpBodyGetType(body);
+	cpVect p = cpBodyGetPosition(body);
+	cpVect v = cpBodyGetVelocity(body);
+	cpFloat w = cpBodyGetAngularVelocity(body);
+	cpFloat mass = cpBodyGetMass(body);
+	cpFloat moment = cpBodyGetMoment(body);
+	cpFloat speed = cpvlength(v);
+	cpFloat angular_speed = cpfabs(w);
+
+	summary->bodies++;
+	if(type == CP_BODY_TYPE_DYNAMIC){
+		summary->dynamic_bodies++;
+		summary->sum_position_x += p.x;
+		summary->sum_position_y += p.y;
+		summary->sum_velocity_x += v.x;
+		summary->sum_velocity_y += v.y;
+		summary->total_mass += mass;
+		if(!isinf((double)mass)) summary->total_kinetic_energy += 0.5*mass*cpvdot(v, v);
+		if(!isinf((double)moment)) summary->total_kinetic_energy += 0.5*moment*w*w;
+		if(speed > summary->max_linear_velocity) summary->max_linear_velocity = speed;
+		if(angular_speed > summary->max_angular_velocity) summary->max_angular_velocity = angular_speed;
+
+		cpBB bb = cpBBNewForExtents(p, 0.0, 0.0);
+		summary->body_bounds = summary->has_body_bounds ? cpBBMerge(summary->body_bounds, bb) : bb;
+		summary->has_body_bounds = cpTrue;
+	} else if(type == CP_BODY_TYPE_STATIC){
+		summary->static_bodies++;
+	} else if(type == CP_BODY_TYPE_KINEMATIC){
+		summary->kinematic_bodies++;
+	}
+
+	if(cpBodyIsSleeping(body)) summary->sleeping_bodies++;
+	if(is_bad(mass)) summary->invalid_values++;
+	if(is_bad(moment)) summary->invalid_values++;
+	if(is_bad(w)) summary->invalid_values++;
+	summary_add_bad_vect(summary, p);
+	summary_add_bad_vect(summary, v);
+}
+
+static void
+summary_shape(cpShape *shape, void *data)
+{
+	Summary *summary = (Summary *)data;
+	cpBB bb = cpShapeGetBB(shape);
+	summary->shapes++;
+	summary->shape_bounds = summary->has_shape_bounds ? cpBBMerge(summary->shape_bounds, bb) : bb;
+	summary->has_shape_bounds = cpTrue;
+	if(is_bad(bb.l)) summary->invalid_values++;
+	if(is_bad(bb.b)) summary->invalid_values++;
+	if(is_bad(bb.r)) summary->invalid_values++;
+	if(is_bad(bb.t)) summary->invalid_values++;
+}
+
+static void
+summary_constraint(cpConstraint *constraint, void *data)
+{
+	(void)constraint;
+	Summary *summary = (Summary *)data;
+	summary->constraints++;
+}
+
+static Summary
+collect_summary(cpSpace *space, int step)
+{
+	Summary summary;
+	memset(&summary, 0, sizeof(summary));
+	summary.step = step;
+	cpSpaceEachBody(space, summary_body, &summary);
+	cpSpaceEachShape(space, summary_shape, &summary);
+	cpSpaceEachConstraint(space, summary_constraint, &summary);
+	return summary;
+}
+
+
+static void
+print_number_json(cpFloat value)
+{
+	if(is_bad(value)){
+		printf("null");
+	} else {
+		printf("%.17g", (double)value);
+	}
+}
+
+static void
+print_bb_json(cpBB bb, cpBool valid)
+{
+	if(valid){
+		printf("[");
+		print_number_json(bb.l);
+		printf(",");
+		print_number_json(bb.b);
+		printf(",");
+		print_number_json(bb.r);
+		printf(",");
+		print_number_json(bb.t);
+		printf("]");
+	} else {
+		printf("null");
+	}
+}
+
+static void
+print_summary_json(const Summary *summary)
+{
+	printf("{\"step\":%d", summary->step);
+	printf(",\"bodies\":%d", summary->bodies);
+	printf(",\"dynamic_bodies\":%d", summary->dynamic_bodies);
+	printf(",\"static_bodies\":%d", summary->static_bodies);
+	printf(",\"kinematic_bodies\":%d", summary->kinematic_bodies);
+	printf(",\"sleeping_bodies\":%d", summary->sleeping_bodies);
+	printf(",\"shapes\":%d", summary->shapes);
+	printf(",\"constraints\":%d", summary->constraints);
+	printf(",\"invalid_values\":%d", summary->invalid_values);
+	printf(",\"total_mass\":");
+	print_number_json(summary->total_mass);
+	printf(",\"total_kinetic_energy\":");
+	print_number_json(summary->total_kinetic_energy);
+	printf(",\"max_linear_velocity\":");
+	print_number_json(summary->max_linear_velocity);
+	printf(",\"max_angular_velocity\":");
+	print_number_json(summary->max_angular_velocity);
+	printf(",\"sum_position\":[");
+	print_number_json(summary->sum_position_x);
+	printf(",");
+	print_number_json(summary->sum_position_y);
+	printf("]");
+	printf(",\"sum_velocity\":[");
+	print_number_json(summary->sum_velocity_x);
+	printf(",");
+	print_number_json(summary->sum_velocity_y);
+	printf("]");
+	printf(",\"body_bounds\":");
+	print_bb_json(summary->body_bounds, summary->has_body_bounds);
+	printf(",\"shape_bounds\":");
+	print_bb_json(summary->shape_bounds, summary->has_shape_bounds);
+	printf("}");
+}
+
+static int
+compare_ints(const void *a, const void *b)
+{
+	int ia = *(const int *)a;
+	int ib = *(const int *)b;
+	return (ia > ib) - (ia < ib);
+}
+
+static int
+parse_checkpoints(const char *arg, int *checkpoints, int max_checkpoints)
+{
+	if(!arg) return 0;
+	char *copy = (char *)malloc(strlen(arg) + 1);
+	if(!copy){
+		fprintf(stderr, "Out of memory.\n");
+		exit(1);
+	}
+	strcpy(copy, arg);
+
+	int count = 0;
+	for(char *token = strtok(copy, ","); token; token = strtok(NULL, ",")){
+		if(count >= max_checkpoints){
+			fprintf(stderr, "Too many checkpoints; max is %d.\n", max_checkpoints);
+			free(copy);
+			exit(2);
+		}
+		checkpoints[count++] = atoi(token);
+	}
+	free(copy);
+	return count;
+}
+
+static int
+prepare_checkpoints(const Benchmark *benchmark, int *checkpoints, int checkpoint_count, int max_checkpoints)
+{
+	if(checkpoint_count == 0){
+		int defaults[] = {0, 1, 10, 100, benchmark->steps};
+		for(size_t i = 0; i < sizeof(defaults)/sizeof(defaults[0]); i++){
+			if(defaults[i] <= benchmark->steps) checkpoints[checkpoint_count++] = defaults[i];
+		}
+	} else {
+		for(int i = 0; i < checkpoint_count; i++){
+			if(checkpoints[i] < 0) checkpoints[i] = 0;
+			if(checkpoints[i] > benchmark->steps) checkpoints[i] = benchmark->steps;
+		}
+	}
+
+	qsort(checkpoints, (size_t)checkpoint_count, sizeof(int), compare_ints);
+	int out = 0;
+	for(int i = 0; i < checkpoint_count; i++){
+		if(out == 0 || checkpoints[i] != checkpoints[out - 1]) checkpoints[out++] = checkpoints[i];
+	}
+	(void)max_checkpoints;
+	return out;
+}
+
+static void
+run_summary_json(Benchmark *benchmark, int size, const int *input_checkpoints, int input_checkpoint_count, int max_checkpoints)
+{
+	int *checkpoints = (int *)calloc((size_t)max_checkpoints, sizeof(int));
+	if(!checkpoints){
+		fprintf(stderr, "Out of memory.\n");
+		exit(1);
+	}
+	for(int i = 0; i < input_checkpoint_count; i++) checkpoints[i] = input_checkpoints[i];
+	int checkpoint_count = prepare_checkpoints(benchmark, checkpoints, input_checkpoint_count, max_checkpoints);
+	int checkpoint_index = 0;
+	void *state = NULL;
+
+	cpSpace *space = benchmark->init(size, &state);
+
+	printf("{\"benchmark\":\"%s\",\"size\":%d,\"steps\":%d,\"checkpoints\":[", benchmark->name, size, benchmark->steps);
+	if(checkpoint_index < checkpoint_count && checkpoints[checkpoint_index] == 0){
+		Summary summary = collect_summary(space, 0);
+		print_summary_json(&summary);
+		checkpoint_index++;
+	}
+
+	for(int step = 1; step <= benchmark->steps; step++){
+		benchmark->update(space, state, (cpFloat)(1.0/FPS));
+		if(checkpoint_index < checkpoint_count && checkpoints[checkpoint_index] == step){
+			if(checkpoint_index > 0) printf(",");
+			Summary summary = collect_summary(space, step);
+			print_summary_json(&summary);
+			checkpoint_index++;
+		}
+	}
+	printf("]}");
+
+	free_space_children(space);
+	cpSpaceFree(space);
+	if(benchmark->destroy_state) benchmark->destroy_state(state);
+	free(checkpoints);
+}
+
+typedef struct SvgContext {
+	FILE *file;
+} SvgContext;
+
+static void
+svg_color(char *buffer, size_t size, cpSpaceDebugColor color)
+{
+	int r = (int)(cpfclamp(color.r, 0.0, 1.0)*255.0);
+	int g = (int)(cpfclamp(color.g, 0.0, 1.0)*255.0);
+	int b = (int)(cpfclamp(color.b, 0.0, 1.0)*255.0);
+	snprintf(buffer, size, "#%02x%02x%02x", r, g, b);
+}
+
+static cpSpaceDebugColor
+svg_color_for_shape(cpShape *shape, cpDataPointer data)
+{
+	(void)shape;
+	(void)data;
+	cpSpaceDebugColor color = {0.35f, 0.55f, 0.95f, 0.55f};
+	return color;
+}
+
+static void
+svg_draw_circle(cpVect pos, cpFloat angle, cpFloat radius, cpSpaceDebugColor outline, cpSpaceDebugColor fill, cpDataPointer data)
+{
+	SvgContext *ctx = (SvgContext *)data;
+	char stroke[16], fill_color[16];
+	svg_color(stroke, sizeof(stroke), outline);
+	svg_color(fill_color, sizeof(fill_color), fill);
+	fprintf(ctx->file, "  <circle cx=\"%.17g\" cy=\"%.17g\" r=\"%.17g\" fill=\"%s\" fill-opacity=\"%.3g\" stroke=\"%s\" stroke-width=\"0.03\"/>\n",
+		(double)pos.x, (double)-pos.y, (double)radius, fill_color, (double)fill.a, stroke);
+	fprintf(ctx->file, "  <line x1=\"%.17g\" y1=\"%.17g\" x2=\"%.17g\" y2=\"%.17g\" stroke=\"%s\" stroke-width=\"0.02\"/>\n",
+		(double)pos.x, (double)-pos.y, (double)(pos.x + cos(angle)*radius), (double)-(pos.y + sin(angle)*radius), stroke);
+}
+
+static void
+svg_draw_segment(cpVect a, cpVect b, cpSpaceDebugColor color, cpDataPointer data)
+{
+	SvgContext *ctx = (SvgContext *)data;
+	char stroke[16];
+	svg_color(stroke, sizeof(stroke), color);
+	fprintf(ctx->file, "  <line x1=\"%.17g\" y1=\"%.17g\" x2=\"%.17g\" y2=\"%.17g\" stroke=\"%s\" stroke-width=\"0.05\" stroke-linecap=\"round\"/>\n",
+		(double)a.x, (double)-a.y, (double)b.x, (double)-b.y, stroke);
+}
+
+static void
+svg_draw_fat_segment(cpVect a, cpVect b, cpFloat radius, cpSpaceDebugColor outline, cpSpaceDebugColor fill, cpDataPointer data)
+{
+	SvgContext *ctx = (SvgContext *)data;
+	char stroke[16];
+	(void)outline;
+	svg_color(stroke, sizeof(stroke), fill);
+	fprintf(ctx->file, "  <line x1=\"%.17g\" y1=\"%.17g\" x2=\"%.17g\" y2=\"%.17g\" stroke=\"%s\" stroke-opacity=\"%.3g\" stroke-width=\"%.17g\" stroke-linecap=\"round\"/>\n",
+		(double)a.x, (double)-a.y, (double)b.x, (double)-b.y, stroke, (double)fill.a, (double)(2.0*radius));
+}
+
+static void
+svg_draw_polygon(int count, const cpVect *verts, cpFloat radius, cpSpaceDebugColor outline, cpSpaceDebugColor fill, cpDataPointer data)
+{
+	SvgContext *ctx = (SvgContext *)data;
+	char stroke[16], fill_color[16];
+	(void)radius;
+	svg_color(stroke, sizeof(stroke), outline);
+	svg_color(fill_color, sizeof(fill_color), fill);
+	fprintf(ctx->file, "  <polygon points=\"");
+	for(int i = 0; i < count; i++) fprintf(ctx->file, "%.17g,%.17g ", (double)verts[i].x, (double)-verts[i].y);
+	fprintf(ctx->file, "\" fill=\"%s\" fill-opacity=\"%.3g\" stroke=\"%s\" stroke-width=\"0.03\"/>\n", fill_color, (double)fill.a, stroke);
+}
+
+static void
+svg_draw_dot(cpFloat size, cpVect pos, cpSpaceDebugColor color, cpDataPointer data)
+{
+	SvgContext *ctx = (SvgContext *)data;
+	char fill_color[16];
+	svg_color(fill_color, sizeof(fill_color), color);
+	fprintf(ctx->file, "  <circle cx=\"%.17g\" cy=\"%.17g\" r=\"%.17g\" fill=\"%s\"/>\n", (double)pos.x, (double)-pos.y, (double)(size/2.0), fill_color);
+}
+
+static void
+write_svg_snapshot(Benchmark *benchmark, int size, int step, const char *path)
+{
+	void *state = NULL;
+	cpSpace *space = benchmark->init(size, &state);
+	if(step < 0 || step > benchmark->steps) step = benchmark->steps;
+	for(int i = 0; i < step; i++) benchmark->update(space, state, (cpFloat)(1.0/FPS));
+
+	Summary summary = collect_summary(space, step);
+	cpBB bb = summary.has_shape_bounds ? summary.shape_bounds : cpBBNew(-1.0, -1.0, 1.0, 1.0);
+	cpFloat margin = cpfmax(1.0, cpfmax(bb.r - bb.l, bb.t - bb.b)*0.05);
+	cpFloat min_x = bb.l - margin;
+	cpFloat max_x = bb.r + margin;
+	cpFloat min_y = -bb.t - margin;
+	cpFloat max_y = -bb.b + margin;
+	cpFloat width = cpfmax(1.0, max_x - min_x);
+	cpFloat height = cpfmax(1.0, max_y - min_y);
+
+	FILE *file = (strcmp(path, "-") == 0 ? stdout : fopen(path, "w"));
+	if(!file){
+		fprintf(stderr, "Could not open SVG output path: %s\n", path);
+		exit(1);
+	}
+
+	SvgContext ctx = {file};
+	fprintf(file, "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"%.17g %.17g %.17g %.17g\">\n", (double)min_x, (double)min_y, (double)width, (double)height);
+	fprintf(file, "  <rect x=\"%.17g\" y=\"%.17g\" width=\"%.17g\" height=\"%.17g\" fill=\"white\"/>\n", (double)min_x, (double)min_y, (double)width, (double)height);
+	fprintf(file, "  <title>MunkBench %s size %d step %d</title>\n", benchmark->name, size, step);
+
+	cpSpaceDebugColor outline_color = {0.10f, 0.10f, 0.12f, 1.0f};
+	cpSpaceDebugColor constraint_color = {0.80f, 0.25f, 0.25f, 1.0f};
+	cpSpaceDebugColor collision_color = {0.90f, 0.20f, 0.20f, 1.0f};
+	cpSpaceDebugDrawOptions options = {
+		svg_draw_circle,
+		svg_draw_segment,
+		svg_draw_fat_segment,
+		svg_draw_polygon,
+		svg_draw_dot,
+		CP_SPACE_DEBUG_DRAW_SHAPES,
+		outline_color,
+		svg_color_for_shape,
+		constraint_color,
+		collision_color,
+		cpTransformIdentity,
+		&ctx,
+	};
+	cpSpaceDebugDraw(space, &options);
+	fprintf(file, "</svg>\n");
+
+	if(file != stdout) fclose(file);
+	free_space_children(space);
+	cpSpaceFree(space);
+	if(benchmark->destroy_state) benchmark->destroy_state(state);
+}
+
 static RunResult
 run_benchmark(Benchmark *benchmark, int size)
 {
@@ -646,6 +1063,10 @@ main(int argc, char **argv)
 {
 	int size_arg_set = 0;
 	int size_arg = 0;
+	int summary_json = 0;
+	const char *checkpoints_arg = NULL;
+	const char *svg_path = NULL;
+	int svg_step = -1;
 	char **selected_names = NULL;
 	int selected_name_count = 0;
 
@@ -669,6 +1090,26 @@ main(int argc, char **argv)
 				}
 				selected_names[selected_name_count++] = argv[++i];
 			}
+		} else if(strcmp(argv[i], "--summary-json") == 0){
+			summary_json = 1;
+		} else if(strcmp(argv[i], "--checkpoints") == 0){
+			if(i + 1 >= argc){
+				fprintf(stderr, "Missing value for %s.\n", argv[i]);
+				return 2;
+			}
+			checkpoints_arg = argv[++i];
+		} else if(strcmp(argv[i], "--svg") == 0){
+			if(i + 1 >= argc){
+				fprintf(stderr, "Missing value for %s.\n", argv[i]);
+				return 2;
+			}
+			svg_path = argv[++i];
+		} else if(strcmp(argv[i], "--step") == 0){
+			if(i + 1 >= argc){
+				fprintf(stderr, "Missing value for %s.\n", argv[i]);
+				return 2;
+			}
+			svg_step = atoi(argv[++i]);
 		} else {
 			fprintf(stderr, "Unknown argument: %s\n", argv[i]);
 			usage(argv[0]);
@@ -685,6 +1126,47 @@ main(int argc, char **argv)
 			free(selected_names);
 			return 2;
 		}
+	}
+
+	if(svg_path){
+		if(selected_name_count != 1){
+			fprintf(stderr, "--svg requires exactly one benchmark selected with -b/--benchmarks.\n");
+			free(selected_names);
+			return 2;
+		}
+		if(size_arg_set && size_arg == -1){
+			fprintf(stderr, "--svg does not support size sweeps.\n");
+			free(selected_names);
+			return 2;
+		}
+		Benchmark *benchmark = find_benchmark(selected_names[0]);
+		int size = size_arg_set ? size_arg : benchmark->default_size;
+		write_svg_snapshot(benchmark, size, svg_step, svg_path);
+		free(selected_names);
+		return 0;
+	}
+
+	if(summary_json){
+		if(size_arg_set && size_arg == -1){
+			fprintf(stderr, "--summary-json does not support size sweeps.\n");
+			free(selected_names);
+			return 2;
+		}
+		int max_checkpoints = 128;
+		int checkpoints[128];
+		int checkpoint_count = parse_checkpoints(checkpoints_arg, checkpoints, max_checkpoints);
+		printf("{\"version\":\"%s\",\"benchmarks\":[", MUNK2D_VERSION);
+		int emitted = 0;
+		for(int i = 0; i < benchmark_count; i++){
+			Benchmark *benchmark = &benchmarks[i];
+			if(!name_selected(benchmark, selected_names, selected_name_count)) continue;
+			if(emitted++) printf(",");
+			int size = size_arg_set ? size_arg : benchmark->default_size;
+			run_summary_json(benchmark, size, checkpoints, checkpoint_count, max_checkpoints);
+		}
+		printf("]}\n");
+		free(selected_names);
+		return 0;
 	}
 
 	printf("version,benchmark,size,init_time,run_time\n");
