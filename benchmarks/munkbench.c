@@ -185,54 +185,101 @@ add_static_segment(cpSpace *space, cpVect a, cpVect b, cpFloat radius)
 	return cpSpaceAddShape(space, cpSegmentShapeNew(cpSpaceGetStaticBody(space), a, b, radius));
 }
 
+/* Simple growable pointer array used to collect bodies/shapes/constraints
+ * during space teardown. We cannot remove children while iterating the
+ * space, and post-step callbacks would never fire (no step runs after
+ * teardown), so we gather pointers first and free them afterwards. */
+typedef struct PtrArray {
+	void **items;
+	size_t count;
+	size_t capacity;
+} PtrArray;
+
 static void
-shape_free_wrap(cpSpace *space, cpShape *shape, void *unused)
+ptr_array_init(PtrArray *array)
 {
-	(void)unused;
-	cpSpaceRemoveShape(space, shape);
-	cpShapeFree(shape);
+	array->items = NULL;
+	array->count = 0;
+	array->capacity = 0;
 }
 
 static void
-post_shape_free(cpShape *shape, cpSpace *space)
+ptr_array_push(PtrArray *array, void *item)
 {
-	cpSpaceAddPostStepCallback(space, (cpPostStepFunc)shape_free_wrap, shape, NULL);
+	if(array->count == array->capacity){
+		size_t new_capacity = array->capacity ? array->capacity*2 : 64;
+		void **resized = (void **)realloc(array->items, new_capacity*sizeof(void *));
+		if(!resized){
+			fprintf(stderr, "Out of memory.\n");
+			exit(1);
+		}
+		array->items = resized;
+		array->capacity = new_capacity;
+	}
+	array->items[array->count++] = item;
 }
 
 static void
-constraint_free_wrap(cpSpace *space, cpConstraint *constraint, void *unused)
+ptr_array_dispose(PtrArray *array)
 {
-	(void)unused;
-	cpSpaceRemoveConstraint(space, constraint);
-	cpConstraintFree(constraint);
+	free(array->items);
+	array->items = NULL;
+	array->count = 0;
+	array->capacity = 0;
 }
 
 static void
-post_constraint_free(cpConstraint *constraint, cpSpace *space)
+collect_shape(cpShape *shape, void *data)
 {
-	cpSpaceAddPostStepCallback(space, (cpPostStepFunc)constraint_free_wrap, constraint, NULL);
+	ptr_array_push((PtrArray *)data, shape);
 }
 
 static void
-body_free_wrap(cpSpace *space, cpBody *body, void *unused)
+collect_constraint(cpConstraint *constraint, void *data)
 {
-	(void)unused;
-	cpSpaceRemoveBody(space, body);
-	cpBodyFree(body);
+	ptr_array_push((PtrArray *)data, constraint);
 }
 
 static void
-post_body_free(cpBody *body, cpSpace *space)
+collect_body(cpBody *body, void *data)
 {
-	cpSpaceAddPostStepCallback(space, (cpPostStepFunc)body_free_wrap, body, NULL);
+	ptr_array_push((PtrArray *)data, body);
 }
 
 static void
 free_space_children(cpSpace *space)
 {
-	cpSpaceEachShape(space, (cpSpaceShapeIteratorFunc)post_shape_free, space);
-	cpSpaceEachConstraint(space, (cpSpaceConstraintIteratorFunc)post_constraint_free, space);
-	cpSpaceEachBody(space, (cpSpaceBodyIteratorFunc)post_body_free, space);
+	PtrArray shapes, constraints, bodies;
+	ptr_array_init(&shapes);
+	ptr_array_init(&constraints);
+	ptr_array_init(&bodies);
+
+	cpSpaceEachShape(space, collect_shape, &shapes);
+	cpSpaceEachConstraint(space, collect_constraint, &constraints);
+	cpSpaceEachBody(space, collect_body, &bodies);
+
+	for(size_t i = 0; i < shapes.count; i++){
+		cpShape *shape = (cpShape *)shapes.items[i];
+		cpSpaceRemoveShape(space, shape);
+		cpShapeFree(shape);
+	}
+	for(size_t i = 0; i < constraints.count; i++){
+		cpConstraint *constraint = (cpConstraint *)constraints.items[i];
+		cpSpaceRemoveConstraint(space, constraint);
+		cpConstraintFree(constraint);
+	}
+	for(size_t i = 0; i < bodies.count; i++){
+		cpBody *body = (cpBody *)bodies.items[i];
+		/* The space's embedded static body lives inside the cpSpace struct
+		 * and must never be removed or freed. */
+		if(body == cpSpaceGetStaticBody(space)) continue;
+		cpSpaceRemoveBody(space, body);
+		cpBodyFree(body);
+	}
+
+	ptr_array_dispose(&shapes);
+	ptr_array_dispose(&constraints);
+	ptr_array_dispose(&bodies);
 }
 
 static void
@@ -494,7 +541,12 @@ init_diagonal(int size, void **state)
 		position = cpvsub(position, cpv(0.0, 8.0*a));
 	}
 
-	for(int i = 0; i < 3000; i++){
+	/* Pymunk's reference scene hardcodes 3000 dynamic circles regardless of
+	 * size. Here we scale the dynamic count with size so the benchmark size
+	 * actually controls both halves of the scene; 60*size preserves the
+	 * original 3000-body count at the default size of 50. */
+	int dynamic_count = 60*size;
+	for(int i = 0; i < dynamic_count; i++){
 		cpBody *body = add_dynamic_body(space, cpv(((cpFloat)i/15.0)*2.0 - 75.0, (cpFloat)(i % 15)*2.0 + 50.0));
 		add_circle_shape(space, body, 0.5, cpvzero, 1.0);
 	}
