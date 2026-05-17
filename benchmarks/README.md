@@ -1,8 +1,15 @@
 # MunkBench
 
-MunkBench is the standalone Munk2D benchmark suite. It ports the benchmark
-scenes from Pymunk's `benchmarks/chipmunk.py` so Munk2D performance changes can
-be measured without Python.
+MunkBench is the standalone Munk2D benchmark suite. It exercises a range of
+simulation setups so Munk2D performance and stability changes can be measured
+without demo, rendering, or Python dependencies.
+
+The benchmark scenarios are based on the suite from the
+[`box2d-optimized`](https://github.com/mtsamis/box2d-optimized) fork of Box2D,
+which proposed multiple Box2D engine improvements. The scenes are useful for
+tracking relative changes within Munk2D, but raw timings should not be compared
+directly with Box2D results unless the resulting simulation state is also
+reviewed for equivalence.
 
 Build:
 
