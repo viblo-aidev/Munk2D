@@ -9,6 +9,57 @@ on:
     branches: master
 
 jobs:
+  munkbench-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: >
+          cmake -B ${{ github.workspace }}/build-munkbench
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DBUILD_DEMOS=OFF
+          -DBUILD_TESTING=ON
+          -DBUILD_BENCHMARKS=ON
+          -S ${{ github.workspace }}
+
+      - name: Build MunkBench and tests
+        run: cmake --build ${{ github.workspace }}/build-munkbench --parallel
+
+      - name: Unit tests
+        working-directory: ${{ github.workspace }}/build-munkbench
+        run: ctest --output-on-failure
+
+      - name: MunkBench validation summaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${{ github.workspace }}/build-munkbench/benchmarks/munkbench --summary-json \
+            -b FallingSquares FallingCircles Tumbler AddPair MildN2 N2 Multifixture \
+               MostlyStaticSingleBody MostlyStaticMultiBody Diagonal MixedStaticDynamic \
+               BigMobile SlowExplosion \
+            -s 1 \
+            --checkpoints 0,1,10 > ${{ github.workspace }}/munkbench-summary.json
+
+          jq -e '
+            .version
+            and (.benchmarks | length == 13)
+            and ([.benchmarks[].checkpoints[].invalid_values] | max == 0)
+            and ([.benchmarks[].checkpoints[].max_linear_velocity // 0] | max < 1e8)
+            and ([.benchmarks[].checkpoints[].max_angular_velocity // 0] | max < 1e8)
+          ' ${{ github.workspace }}/munkbench-summary.json
+
+      - name: MunkBench SVG smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${{ github.workspace }}/build-munkbench/benchmarks/munkbench \
+            -b N2 -s 25 --svg ${{ github.workspace }}/munkbench-n2.svg --step 10
+          test -s ${{ github.workspace }}/munkbench-n2.svg
+          grep -q '<svg' ${{ github.workspace }}/munkbench-n2.svg
+          grep -q '</svg>' ${{ github.workspace }}/munkbench-n2.svg
+
   build:
     runs-on: ${{ matrix.os }}
 

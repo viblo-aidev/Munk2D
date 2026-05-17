@@ -3,11 +3,6 @@ file(GLOB chipmunk_public_header "${chipmunk_SOURCE_DIR}/include/chipmunk/*.h")
 
 include_directories(${chipmunk_SOURCE_DIR}/include)
 
-# Munk2D 2.0.0
-set(MUNK2D_VERSION_MAJOR 2)
-set(MUNK2D_VERSION_MINOR 0)
-set(MUNK2D_VERSION_PATCH 1)
-set(MUNK2D_VERSION "${MUNK2D_VERSION_MAJOR}.${MUNK2D_VERSION_MINOR}.${MUNK2D_VERSION_PATCH}")
 message("Configuring Munk2D version ${MUNK2D_VERSION}")
 
 
