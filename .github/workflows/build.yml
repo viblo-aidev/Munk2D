@@ -50,15 +50,52 @@ jobs:
             and ([.benchmarks[].checkpoints[].max_angular_velocity // 0] | max < 1e8)
           ' ${{ github.workspace }}/munkbench-summary.json
 
-      - name: MunkBench SVG smoke
+      - name: MunkBench SVG snapshots (all benchmarks)
         shell: bash
         run: |
           set -euo pipefail
-          ${{ github.workspace }}/build-munkbench/benchmarks/munkbench \
-            -b N2 -s 25 --svg ${{ github.workspace }}/munkbench-n2.svg --step 10
-          test -s ${{ github.workspace }}/munkbench-n2.svg
-          grep -q '<svg' ${{ github.workspace }}/munkbench-n2.svg
-          grep -q '</svg>' ${{ github.workspace }}/munkbench-n2.svg
+          SVG_DIR="${{ github.workspace }}/munkbench-svg"
+          mkdir -p "$SVG_DIR"
+          MUNKBENCH="${{ github.workspace }}/build-munkbench/benchmarks/munkbench"
+          BENCHMARKS=(FallingSquares FallingCircles Tumbler AddPair MildN2 N2 Multifixture \
+            MostlyStaticSingleBody MostlyStaticMultiBody Diagonal MixedStaticDynamic \
+            BigMobile SlowExplosion)
+          for bench in "${BENCHMARKS[@]}"; do
+            echo "Rendering $bench ..."
+            "$MUNKBENCH" -b "$bench" -s 1 --svg "$SVG_DIR/${bench}.svg" --step 10
+            grep -q '<svg' "$SVG_DIR/${bench}.svg"
+            grep -q '</svg>' "$SVG_DIR/${bench}.svg"
+          done
+
+          # Build a gallery page
+          GALLERY="$SVG_DIR/index.html"
+          {
+            echo '<!DOCTYPE html>'
+            echo '<html><head><meta charset="utf-8"><title>MunkBench Gallery</title>'
+            echo '<style>'
+            echo 'body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 2rem; }'
+            echo 'h1 { color: #7dd3fc; }'
+            echo '.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; }'
+            echo '.card { background: #16213e; border-radius: 8px; padding: 1rem; border: 1px solid #0f3460; }'
+            echo '.card h2 { margin: 0 0 0.5rem 0; font-size: 0.9rem; color: #a0a0b0; }'
+            echo '.card svg { width: 100%; height: auto; background: #f8f8f8; border-radius: 4px; display: block; }'
+            echo '</style></head><body>'
+            echo '<h1>MunkBench Gallery</h1>'
+            echo '<p>Snapshot at step 10, size 1. Build: ${{ github.sha }} ${{ github.ref_name }}</p>'
+            echo '<div class="grid">'
+            for bench in "${BENCHMARKS[@]}"; do
+              echo "<div class='card'><h2>${bench}</h2>"
+              cat "$SVG_DIR/${bench}.svg"
+              echo '</div>'
+            done
+            echo '</div></body></html>'
+          } > "$GALLERY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: munkbench-gallery
+          path: ${{ github.workspace }}/munkbench-svg/
 
   build:
     runs-on: ${{ matrix.os }}
