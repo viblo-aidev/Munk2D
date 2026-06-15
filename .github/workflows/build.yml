@@ -87,7 +87,7 @@ jobs:
             [Diagonal]=2
             [MixedStaticDynamic]=100
             [BigMobile]=1
-            [SlowExplosion]=100
+            [SlowExplosion]=1
           )
 
           BENCHMARKS=(FallingSquares FallingCircles Tumbler AddPair MildN2 N2 Multifixture \
