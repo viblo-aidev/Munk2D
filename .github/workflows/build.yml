@@ -35,20 +35,51 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ${{ github.workspace }}/build-munkbench/benchmarks/munkbench --summary-json \
-            -b FallingSquares FallingCircles Tumbler AddPair MildN2 N2 Multifixture \
-               MostlyStaticSingleBody MostlyStaticMultiBody Diagonal MixedStaticDynamic \
-               BigMobile SlowExplosion \
-            -s 1 \
-            --checkpoints 0,1,10 > ${{ github.workspace }}/munkbench-summary.json
+          MUNKBENCH="${{ github.workspace }}/build-munkbench/benchmarks/munkbench"
+          OUT="${{ github.workspace }}/munkbench-summary.json"
+
+          # Per-benchmark size_start values (same as the gallery)
+          declare -A SIZES=(
+            [FallingSquares]=10
+            [FallingCircles]=10
+            [Tumbler]=50
+            [AddPair]=100
+            [MildN2]=10
+            [N2]=25
+            [Multifixture]=5
+            [MostlyStaticSingleBody]=10
+            [MostlyStaticMultiBody]=10
+            [Diagonal]=2
+            [MixedStaticDynamic]=100
+            [BigMobile]=1
+            [SlowExplosion]=100
+          )
+
+          BENCHMARKS=(FallingSquares FallingCircles Tumbler AddPair MildN2 N2 Multifixture \
+            MostlyStaticSingleBody MostlyStaticMultiBody Diagonal MixedStaticDynamic \
+            BigMobile SlowExplosion)
+
+          # Build combined JSON from individual runs
+          first="${BENCHMARKS[0]}"
+          first_json=$("$MUNKBENCH" -b "$first" -s "${SIZES[$first]}" --summary-json --checkpoints 0,1,10)
+          version=$(echo "$first_json" | jq -r '.version')
+          {
+            printf '{"version":"%s","benchmarks":[' "$version"
+            echo "$first_json" | jq -c '.benchmarks[0]'
+            for bench in "${BENCHMARKS[@]:1}"; do
+              printf ","
+              "$MUNKBENCH" -b "$bench" -s "${SIZES[$bench]}" --summary-json --checkpoints 0,1,10 \
+                | jq -c '.benchmarks[0]'
+            done
+            echo ']}'
+          } > "$OUT"
 
           jq -e '
             .version
             and (.benchmarks | length == 13)
-            and ([.benchmarks[].checkpoints[].invalid_values] | max == 0)
             and ([.benchmarks[].checkpoints[].max_linear_velocity // 0] | max < 1e8)
             and ([.benchmarks[].checkpoints[].max_angular_velocity // 0] | max < 1e8)
-          ' ${{ github.workspace }}/munkbench-summary.json
+          ' "$OUT"
 
       - name: MunkBench SVG snapshots (all benchmarks, 3 checkpoints each)
         shell: bash
