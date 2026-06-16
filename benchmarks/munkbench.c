@@ -1192,7 +1192,7 @@ main(int argc, char **argv)
 			return 2;
 		}
 		Benchmark *benchmark = find_benchmark(selected_names[0]);
-		int size = size_arg_set ? size_arg : benchmark->default_size;
+		int size = size_arg_set ? size_arg : benchmark->size_start;
 		write_svg_snapshot(benchmark, size, svg_step, svg_path);
 		free(selected_names);
 		return 0;
@@ -1213,7 +1213,7 @@ main(int argc, char **argv)
 			Benchmark *benchmark = &benchmarks[i];
 			if(!name_selected(benchmark, selected_names, selected_name_count)) continue;
 			if(emitted++) printf(",");
-			int size = size_arg_set ? size_arg : benchmark->default_size;
+			int size = size_arg_set ? size_arg : benchmark->size_start;
 			run_summary_json(benchmark, size, checkpoints, checkpoint_count, max_checkpoints);
 		}
 		printf("]}\n");
@@ -1227,7 +1227,7 @@ main(int argc, char **argv)
 		if(!name_selected(benchmark, selected_names, selected_name_count)) continue;
 
 		if(!size_arg_set){
-			RunResult result = run_benchmark(benchmark, benchmark->default_size);
+			RunResult result = run_benchmark(benchmark, benchmark->size_start);
 			printf("%s,%s,%d,%.9f,%.9f\n", MUNK2D_VERSION, result.benchmark, result.size, result.init_time, result.run_time);
 		} else if(size_arg == -1){
 			int step = (benchmark->size_end + 1 - benchmark->size_start)/11;
