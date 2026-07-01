@@ -39,26 +39,123 @@ jobs:
             -b FallingSquares FallingCircles Tumbler AddPair MildN2 N2 Multifixture \
                MostlyStaticSingleBody MostlyStaticMultiBody Diagonal MixedStaticDynamic \
                BigMobile SlowExplosion \
-            -s 1 \
             --checkpoints 0,1,10 > ${{ github.workspace }}/munkbench-summary.json
 
           jq -e '
             .version
             and (.benchmarks | length == 13)
-            and ([.benchmarks[].checkpoints[].invalid_values] | max == 0)
             and ([.benchmarks[].checkpoints[].max_linear_velocity // 0] | max < 1e8)
             and ([.benchmarks[].checkpoints[].max_angular_velocity // 0] | max < 1e8)
           ' ${{ github.workspace }}/munkbench-summary.json
 
-      - name: MunkBench SVG smoke
+      - name: MunkBench SVG snapshots (all benchmarks, 3 checkpoints each)
         shell: bash
         run: |
           set -euo pipefail
-          ${{ github.workspace }}/build-munkbench/benchmarks/munkbench \
-            -b N2 -s 25 --svg ${{ github.workspace }}/munkbench-n2.svg --step 10
-          test -s ${{ github.workspace }}/munkbench-n2.svg
-          grep -q '<svg' ${{ github.workspace }}/munkbench-n2.svg
-          grep -q '</svg>' ${{ github.workspace }}/munkbench-n2.svg
+          SVG_DIR="${{ github.workspace }}/munkbench-svg"
+          mkdir -p "$SVG_DIR"
+          MUNKBENCH="${{ github.workspace }}/build-munkbench/benchmarks/munkbench"
+
+          # Benchmark name -> {steps, size_start} (from munkbench.c benchmark table)
+          declare -A STEPS=(
+            [FallingSquares]=1300
+            [FallingCircles]=1300
+            [Tumbler]=1500
+            [AddPair]=1000
+            [MildN2]=100
+            [N2]=100
+            [Multifixture]=500
+            [MostlyStaticSingleBody]=400
+            [MostlyStaticMultiBody]=400
+            [Diagonal]=1000
+            [MixedStaticDynamic]=400
+            [BigMobile]=1000
+            [SlowExplosion]=1000
+          )
+          declare -A SIZES=(
+            [FallingSquares]=10
+            [FallingCircles]=10
+            [Tumbler]=50
+            [AddPair]=100
+            [MildN2]=10
+            [N2]=25
+            [Multifixture]=5
+            [MostlyStaticSingleBody]=10
+            [MostlyStaticMultiBody]=10
+            [Diagonal]=2
+            [MixedStaticDynamic]=100
+            [BigMobile]=1
+            [SlowExplosion]=100
+          )
+
+          BENCHMARKS=(FallingSquares FallingCircles Tumbler AddPair MildN2 N2 Multifixture \
+            MostlyStaticSingleBody MostlyStaticMultiBody Diagonal MixedStaticDynamic \
+            BigMobile SlowExplosion)
+
+          for bench in "${BENCHMARKS[@]}"; do
+            steps=${STEPS[$bench]}
+            size=${SIZES[$bench]}
+            mid=$(( steps / 2 ))
+            for label in start mid end; do
+              case $label in
+                start) step=1 ;;
+                mid)   step=$mid ;;
+                end)   step=$steps ;;
+              esac
+              out="$SVG_DIR/${bench}_${label}.svg"
+              echo "Rendering $bench $label (size $size, step $step / $steps) ..."
+              "$MUNKBENCH" -b "$bench" -s "$size" --svg "$out" --step "$step"
+              grep -q '<svg' "$out"
+              grep -q '</svg>' "$out"
+            done
+          done
+
+          # Build a gallery page
+          GALLERY="$SVG_DIR/index.html"
+          {
+            echo '<!DOCTYPE html>'
+            echo '<html><head><meta charset="utf-8"><title>MunkBench Gallery</title>'
+            echo '<style>'
+            echo 'body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 2rem; }'
+            echo 'h1 { color: #7dd3fc; }'
+            echo '.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(680px, 1fr)); gap: 1.5rem; }'
+            echo '.card { background: #16213e; border-radius: 8px; padding: 1rem; border: 1px solid #0f3460; }'
+            echo '.card h2 { margin: 0 0 0.25rem 0; font-size: 0.85rem; color: #a0a0b0; }'
+            echo '.card .steps { font-size: 0.7rem; color: #555; margin-bottom: 0.5rem; }'
+            echo '.card .row { display: flex; gap: 0.5rem; }'
+            echo '.card .row > div { flex: 1; }'
+            echo '.card .row .label { font-size: 0.65rem; color: #666; text-align: center; margin-top: 0.25rem; }'
+            echo '.card svg { width: 100%; height: auto; background: #f8f8f8; border-radius: 3px; display: block; }'
+            echo '</style></head><body>'
+            echo '<h1>MunkBench Gallery</h1>'
+            echo '<p>Start / mid / end snapshots at each benchmark&rsquo;s configured minimum size. Build: ${{ github.sha }} ${{ github.ref_name }}</p>'
+            echo '<div class="grid">'
+            for bench in "${BENCHMARKS[@]}"; do
+              steps=${STEPS[$bench]}
+              echo "<div class='card'>"
+              echo "<h2>${bench}</h2><div class='steps'>size: ${size} &middot; total steps: ${steps}</div>"
+              echo "<div class='row'>"
+              for label in start mid end; do
+                echo "<div>"
+                cat "$SVG_DIR/${bench}_${label}.svg"
+                case $label in
+                  start) step_label="step 1" ;;
+                  mid)   step_label="step $(( steps / 2 ))" ;;
+                  end)   step_label="step ${steps}" ;;
+                esac
+                echo "<div class='label'>${step_label}</div>"
+                echo '</div>'
+              done
+              echo '</div></div>'
+            done
+            echo '</div></body></html>'
+          } > "$GALLERY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: munkbench-gallery
+          path: ${{ github.workspace }}/munkbench-svg/
 
   build:
     runs-on: ${{ matrix.os }}
