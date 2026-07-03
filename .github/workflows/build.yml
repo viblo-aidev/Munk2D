@@ -132,6 +132,7 @@ jobs:
             echo '<div class="grid">'
             for bench in "${BENCHMARKS[@]}"; do
               steps=${STEPS[$bench]}
+              size=${SIZES[$bench]}
               echo "<div class='card'>"
               echo "<h2>${bench}</h2><div class='steps'>size: ${size} &middot; total steps: ${steps}</div>"
               echo "<div class='row'>"
