@@ -689,7 +689,16 @@ typedef struct Summary {
 	cpBB shape_bounds;
 	cpBool has_body_bounds;
 	cpBool has_shape_bounds;
+	int contact_pairs;
+	int contact_points;
 } Summary;
+
+struct ArbiterSummaryData {
+	Summary *summary;
+	cpArbiter **arbiters;
+	int count;
+	int capacity;
+};
 
 static int
 is_bad(cpFloat value)
@@ -769,6 +778,37 @@ summary_constraint(cpConstraint *constraint, void *data)
 	summary->constraints++;
 }
 
+static void
+summary_arbiter(cpBody *body, cpArbiter *arbiter, void *data)
+{
+	(void)body;
+	struct ArbiterSummaryData *arbiter_data = (struct ArbiterSummaryData *)data;
+	for(int i = 0; i < arbiter_data->count; i++){
+		if(arbiter_data->arbiters[i] == arbiter) return;
+	}
+
+	if(arbiter_data->count == arbiter_data->capacity){
+		int capacity = arbiter_data->capacity ? arbiter_data->capacity*2 : 64;
+		cpArbiter **arbiters = (cpArbiter **)realloc(arbiter_data->arbiters, sizeof(cpArbiter *)*(size_t)capacity);
+		if(!arbiters){
+			fprintf(stderr, "Out of memory while collecting arbiters.\n");
+			exit(1);
+		}
+		arbiter_data->arbiters = arbiters;
+		arbiter_data->capacity = capacity;
+	}
+
+	arbiter_data->arbiters[arbiter_data->count++] = arbiter;
+	arbiter_data->summary->contact_pairs++;
+	arbiter_data->summary->contact_points += cpArbiterGetCount(arbiter);
+}
+
+static void
+summary_body_arbiters(cpBody *body, void *data)
+{
+	cpBodyEachArbiter(body, summary_arbiter, data);
+}
+
 static Summary
 collect_summary(cpSpace *space, int step)
 {
@@ -778,6 +818,13 @@ collect_summary(cpSpace *space, int step)
 	cpSpaceEachBody(space, summary_body, &summary);
 	cpSpaceEachShape(space, summary_shape, &summary);
 	cpSpaceEachConstraint(space, summary_constraint, &summary);
+
+	struct ArbiterSummaryData arbiter_data;
+	memset(&arbiter_data, 0, sizeof(arbiter_data));
+	arbiter_data.summary = &summary;
+	cpSpaceEachBody(space, summary_body_arbiters, &arbiter_data);
+	free(arbiter_data.arbiters);
+
 	return summary;
 }
 
@@ -821,6 +868,8 @@ print_summary_json(const Summary *summary)
 	printf(",\"sleeping_bodies\":%d", summary->sleeping_bodies);
 	printf(",\"shapes\":%d", summary->shapes);
 	printf(",\"constraints\":%d", summary->constraints);
+	printf(",\"contact_pairs\":%d", summary->contact_pairs);
+	printf(",\"contact_points\":%d", summary->contact_points);
 	printf(",\"invalid_values\":%d", summary->invalid_values);
 	printf(",\"total_mass\":");
 	print_number_json(summary->total_mass);

@@ -11,6 +11,11 @@ tracking relative changes within Munk2D, but raw timings should not be compared
 directly with Box2D results unless the resulting simulation state is also
 reviewed for equivalence.
 
+Detailed descriptions of each benchmark, their design intent, and the original
+performance findings are documented in
+[`BENCHMARKS-REFERENCE.md`](BENCHMARKS-REFERENCE.md), adapted from the
+Box2D-optimized dissertation.
+
 Build:
 
 ```sh
