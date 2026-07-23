@@ -59,9 +59,14 @@ MunkBench can emit checkpoint summaries for stability/correctness validation:
 ./build/benchmarks/munkbench --summary-json -b N2 -s 25 --checkpoints 0,1,10,100
 ```
 
-The JSON includes counts, dynamic body bounds, shape bounds, aggregate position
-and velocity sums, kinetic energy, max velocities, sleeping body counts, and an
-`invalid_values` count for NaN/Inf detection.
+The summary run stops at the last requested checkpoint, keeping smoke tests fast.
+Use `final` as a checkpoint to run through the benchmark's configured final step.
+The JSON reports both configured `steps` and actual `simulated_steps`.
+
+The JSON includes body, shape, constraint, contact-pair and contact-point counts,
+dynamic body bounds, shape bounds, aggregate position and velocity sums, kinetic
+energy, max velocities, sleeping body counts, and an `invalid_values` count for
+NaN/Inf detection.
 
 ## SVG snapshots
 

@@ -35,17 +35,60 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ${{ github.workspace }}/build-munkbench/benchmarks/munkbench --summary-json \
-            -b FallingSquares FallingCircles Tumbler AddPair MildN2 N2 Multifixture \
-               MostlyStaticSingleBody MostlyStaticMultiBody Diagonal MixedStaticDynamic \
-               BigMobile SlowExplosion \
-            --checkpoints 0,1,10 > ${{ github.workspace }}/munkbench-summary.json
+          MUNKBENCH="${{ github.workspace }}/build-munkbench/benchmarks/munkbench"
+          SUMMARY_DIR="${{ github.workspace }}/munkbench-summaries"
+          mkdir -p "$SUMMARY_DIR"
+
+          run_smoke() {
+            local benchmark="$1"
+            local checkpoints="$2"
+            shift 2
+            "$MUNKBENCH" --summary-json -b "$benchmark" --checkpoints "$checkpoints" "$@" \
+              > "$SUMMARY_DIR/$benchmark.json"
+          }
+
+          # Degenerate scenes become intentionally expensive after their first step.
+          # MixedStaticDynamic uses a reduced smoke size; timing benchmarks still use size_start.
+          run_smoke FallingSquares 0,1,10,50
+          run_smoke FallingCircles 0,1,10,50
+          run_smoke Tumbler 0,1,10,50
+          run_smoke AddPair 0,1,10,50
+          run_smoke MildN2 0,1
+          run_smoke N2 0,1,10,50
+          run_smoke Multifixture 0,1
+          run_smoke MostlyStaticSingleBody 0,1,10,25
+          run_smoke MostlyStaticMultiBody 0,1,10,50
+          run_smoke Diagonal 0,1,10,50
+          run_smoke MixedStaticDynamic 0,1,10,50 -s 1
+          run_smoke BigMobile 0,1,10,50
+          run_smoke SlowExplosion 0,1,10,50
+
+          jq -s '{version: .[0].version, benchmarks: map(.benchmarks[]) }' \
+            "$SUMMARY_DIR"/*.json > ${{ github.workspace }}/munkbench-summary.json
 
           jq -e '
             .version
             and (.benchmarks | length == 13)
-            and ([.benchmarks[].checkpoints[].max_linear_velocity // 0] | max < 1e8)
-            and ([.benchmarks[].checkpoints[].max_angular_velocity // 0] | max < 1e8)
+            and ([.benchmarks[].benchmark] | unique | length == 13)
+            and all(.benchmarks[];
+              (.checkpoints | length) >= 2
+              and .checkpoints[0].step == 0
+              and .simulated_steps == .checkpoints[-1].step
+              and all(.checkpoints[];
+                .invalid_values == 0
+                and .bodies >= 0
+                and .dynamic_bodies >= 0
+                and .static_bodies >= 0
+                and .kinematic_bodies >= 0
+                and .sleeping_bodies >= 0
+                and .shapes >= 0
+                and .constraints >= 0
+                and .contact_pairs >= 0
+                and .contact_points >= 0
+                and (.max_linear_velocity // 0) < 1e8
+                and (.max_angular_velocity // 0) < 1e8
+              )
+            )
           ' ${{ github.workspace }}/munkbench-summary.json
 
       - name: MunkBench SVG snapshots (all benchmarks, 3 checkpoints each)
