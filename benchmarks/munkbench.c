@@ -751,8 +751,9 @@ summary_body(cpBody *body, void *data)
 	}
 
 	if(cpBodyIsSleeping(body)) summary->sleeping_bodies++;
-	if(is_bad(mass)) summary->invalid_values++;
-	if(is_bad(moment)) summary->invalid_values++;
+	// Infinite mass and moment are expected for static and kinematic bodies.
+	if(type == CP_BODY_TYPE_DYNAMIC && is_bad(mass)) summary->invalid_values++;
+	if(type == CP_BODY_TYPE_DYNAMIC && is_bad(moment)) summary->invalid_values++;
 	if(is_bad(w)) summary->invalid_values++;
 	summary_add_bad_vect(summary, p);
 	summary_add_bad_vect(summary, v);
