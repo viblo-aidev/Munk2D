@@ -91,7 +91,93 @@ jobs:
             )
           ' ${{ github.workspace }}/munkbench-summary.json
 
-      - name: MunkBench SVG snapshots (all benchmarks, 3 checkpoints each)
+      - name: MunkBench smoke SVG snapshots
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SVG_DIR="${{ github.workspace }}/munkbench-smoke-svg"
+          mkdir -p "$SVG_DIR"
+          MUNKBENCH="${{ github.workspace }}/build-munkbench/benchmarks/munkbench"
+
+          # Keep these sizes and final steps aligned with the JSON smoke runs above.
+          declare -A SIZES=(
+            [FallingSquares]=10
+            [FallingCircles]=10
+            [Tumbler]=50
+            [AddPair]=100
+            [MildN2]=10
+            [N2]=25
+            [Multifixture]=5
+            [MostlyStaticSingleBody]=10
+            [MostlyStaticMultiBody]=10
+            [Diagonal]=2
+            [MixedStaticDynamic]=1
+            [BigMobile]=1
+            [SlowExplosion]=100
+          )
+          declare -A STEPS=(
+            [FallingSquares]=50
+            [FallingCircles]=50
+            [Tumbler]=50
+            [AddPair]=50
+            [MildN2]=1
+            [N2]=50
+            [Multifixture]=1
+            [MostlyStaticSingleBody]=25
+            [MostlyStaticMultiBody]=50
+            [Diagonal]=50
+            [MixedStaticDynamic]=50
+            [BigMobile]=50
+            [SlowExplosion]=50
+          )
+          BENCHMARKS=(FallingSquares FallingCircles Tumbler AddPair MildN2 N2 Multifixture \
+            MostlyStaticSingleBody MostlyStaticMultiBody Diagonal MixedStaticDynamic \
+            BigMobile SlowExplosion)
+
+          for bench in "${BENCHMARKS[@]}"; do
+            size=${SIZES[$bench]}
+            step=${STEPS[$bench]}
+            out="$SVG_DIR/${bench}_smoke.svg"
+            echo "Rendering $bench smoke snapshot (size $size, step $step) ..."
+            "$MUNKBENCH" -b "$bench" -s "$size" --svg "$out" --step "$step"
+            grep -q '<svg' "$out"
+            grep -q '</svg>' "$out"
+          done
+
+          GALLERY="$SVG_DIR/index.html"
+          {
+            echo '<!DOCTYPE html>'
+            echo '<html><head><meta charset="utf-8"><title>MunkBench Smoke Gallery</title>'
+            echo '<style>'
+            echo 'body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 2rem; }'
+            echo 'h1 { color: #7dd3fc; }'
+            echo '.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 1.5rem; }'
+            echo '.card { background: #16213e; border-radius: 8px; padding: 1rem; border: 1px solid #0f3460; }'
+            echo '.card h2 { margin: 0 0 0.25rem; font-size: 0.9rem; color: #a0a0b0; }'
+            echo '.card .meta { font-size: 0.7rem; color: #777; margin-bottom: 0.5rem; }'
+            echo '.card svg { width: 100%; height: auto; background: #f8f8f8; border-radius: 3px; display: block; }'
+            echo '</style></head><body>'
+            echo '<h1>MunkBench Smoke Gallery</h1>'
+            echo '<p>One snapshot per benchmark at the same size and final step as the PR smoke validation. Build: ${{ github.sha }} ${{ github.ref_name }}</p>'
+            echo '<div class="grid">'
+            for bench in "${BENCHMARKS[@]}"; do
+              echo "<div class='card'><h2>${bench}</h2>"
+              echo "<div class='meta'>size: ${SIZES[$bench]} &middot; smoke step: ${STEPS[$bench]}</div>"
+              cat "$SVG_DIR/${bench}_smoke.svg"
+              echo '</div>'
+            done
+            echo '</div></body></html>'
+          } > "$GALLERY"
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request' && always()
+        with:
+          name: munkbench-smoke-gallery
+          path: ${{ github.workspace }}/munkbench-smoke-svg/
+
+      - name: MunkBench full SVG gallery (all benchmarks, 3 checkpoints each)
+        if: github.event_name == 'push'
         shell: bash
         run: |
           set -euo pipefail
@@ -196,9 +282,9 @@ jobs:
           } > "$GALLERY"
 
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: github.event_name == 'push' && always()
         with:
-          name: munkbench-gallery
+          name: munkbench-full-gallery
           path: ${{ github.workspace }}/munkbench-svg/
 
   build:
