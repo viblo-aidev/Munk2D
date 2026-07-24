@@ -22,7 +22,9 @@
 
 #include "chipmunk/chipmunk.h"
 
+#include <limits.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,7 +85,7 @@ usage(const char *argv0)
 	printf("  -b, --benchmarks  Run only the named benchmarks.\n");
 	printf("  -s, --size        Size to run. Omit for each benchmark default; use -1 for size sweep.\n");
 	printf("  --summary-json    Emit validation checkpoint summaries as JSON instead of timing CSV.\n");
-	printf("  --checkpoints     Comma-separated step checkpoints for --summary-json. Default: 0,1,10,100,final.\n");
+	printf("  --checkpoints     Comma-separated steps for --summary-json; accepts 'final'. Runs only to the last checkpoint.\n");
 	printf("  --svg file        Write an SVG snapshot for a single benchmark. Use '-' for stdout.\n");
 	printf("  --step n          Step to render for --svg. Default: benchmark final step.\n");
 	printf("  -h, --help        Show this help.\n");
@@ -749,8 +751,9 @@ summary_body(cpBody *body, void *data)
 	}
 
 	if(cpBodyIsSleeping(body)) summary->sleeping_bodies++;
-	if(is_bad(mass)) summary->invalid_values++;
-	if(is_bad(moment)) summary->invalid_values++;
+	// Infinite mass and moment are expected for static and kinematic bodies.
+	if(type == CP_BODY_TYPE_DYNAMIC && is_bad(mass)) summary->invalid_values++;
+	if(type == CP_BODY_TYPE_DYNAMIC && is_bad(moment)) summary->invalid_values++;
 	if(is_bad(w)) summary->invalid_values++;
 	summary_add_bad_vect(summary, p);
 	summary_add_bad_vect(summary, v);
@@ -783,10 +786,6 @@ summary_arbiter(cpBody *body, cpArbiter *arbiter, void *data)
 {
 	(void)body;
 	struct ArbiterSummaryData *arbiter_data = (struct ArbiterSummaryData *)data;
-	for(int i = 0; i < arbiter_data->count; i++){
-		if(arbiter_data->arbiters[i] == arbiter) return;
-	}
-
 	if(arbiter_data->count == arbiter_data->capacity){
 		int capacity = arbiter_data->capacity ? arbiter_data->capacity*2 : 64;
 		cpArbiter **arbiters = (cpArbiter **)realloc(arbiter_data->arbiters, sizeof(cpArbiter *)*(size_t)capacity);
@@ -799,8 +798,14 @@ summary_arbiter(cpBody *body, cpArbiter *arbiter, void *data)
 	}
 
 	arbiter_data->arbiters[arbiter_data->count++] = arbiter;
-	arbiter_data->summary->contact_pairs++;
-	arbiter_data->summary->contact_points += cpArbiterGetCount(arbiter);
+}
+
+static int
+compare_arbiter_ptrs(const void *a, const void *b)
+{
+	uintptr_t pa = (uintptr_t)*(cpArbiter * const *)a;
+	uintptr_t pb = (uintptr_t)*(cpArbiter * const *)b;
+	return (pa > pb) - (pa < pb);
 }
 
 static void
@@ -823,6 +828,12 @@ collect_summary(cpSpace *space, int step)
 	memset(&arbiter_data, 0, sizeof(arbiter_data));
 	arbiter_data.summary = &summary;
 	cpSpaceEachBody(space, summary_body_arbiters, &arbiter_data);
+	qsort(arbiter_data.arbiters, (size_t)arbiter_data.count, sizeof(cpArbiter *), compare_arbiter_ptrs);
+	for(int i = 0; i < arbiter_data.count; i++){
+		if(i > 0 && arbiter_data.arbiters[i] == arbiter_data.arbiters[i - 1]) continue;
+		summary.contact_pairs++;
+		summary.contact_points += cpArbiterGetCount(arbiter_data.arbiters[i]);
+	}
 	free(arbiter_data.arbiters);
 
 	return summary;
@@ -922,7 +933,19 @@ parse_checkpoints(const char *arg, int *checkpoints, int max_checkpoints)
 			free(copy);
 			exit(2);
 		}
-		checkpoints[count++] = atoi(token);
+		if(strcmp(token, "final") == 0){
+			checkpoints[count++] = -1;
+			continue;
+		}
+
+		char *end = NULL;
+		long checkpoint = strtol(token, &end, 10);
+		if(!token[0] || (end && *end) || checkpoint < 0 || checkpoint > INT_MAX){
+			fprintf(stderr, "Invalid checkpoint: %s. Use a non-negative integer or 'final'.\n", token);
+			free(copy);
+			exit(2);
+		}
+		checkpoints[count++] = (int)checkpoint;
 	}
 	free(copy);
 	return count;
@@ -938,8 +961,7 @@ prepare_checkpoints(const Benchmark *benchmark, int *checkpoints, int checkpoint
 		}
 	} else {
 		for(int i = 0; i < checkpoint_count; i++){
-			if(checkpoints[i] < 0) checkpoints[i] = 0;
-			if(checkpoints[i] > benchmark->steps) checkpoints[i] = benchmark->steps;
+			if(checkpoints[i] == -1 || checkpoints[i] > benchmark->steps) checkpoints[i] = benchmark->steps;
 		}
 	}
 
@@ -963,18 +985,19 @@ run_summary_json(Benchmark *benchmark, int size, const int *input_checkpoints, i
 	for(int i = 0; i < input_checkpoint_count; i++) checkpoints[i] = input_checkpoints[i];
 	int checkpoint_count = prepare_checkpoints(benchmark, checkpoints, input_checkpoint_count, max_checkpoints);
 	int checkpoint_index = 0;
+	int simulated_steps = checkpoints[checkpoint_count - 1];
 	void *state = NULL;
 
 	cpSpace *space = benchmark->init(size, &state);
 
-	printf("{\"benchmark\":\"%s\",\"size\":%d,\"steps\":%d,\"checkpoints\":[", benchmark->name, size, benchmark->steps);
+	printf("{\"benchmark\":\"%s\",\"size\":%d,\"steps\":%d,\"simulated_steps\":%d,\"checkpoints\":[", benchmark->name, size, benchmark->steps, simulated_steps);
 	if(checkpoint_index < checkpoint_count && checkpoints[checkpoint_index] == 0){
 		Summary summary = collect_summary(space, 0);
 		print_summary_json(&summary);
 		checkpoint_index++;
 	}
 
-	for(int step = 1; step <= benchmark->steps; step++){
+	for(int step = 1; step <= simulated_steps; step++){
 		benchmark->update(space, state, (cpFloat)(1.0/FPS));
 		if(checkpoint_index < checkpoint_count && checkpoints[checkpoint_index] == step){
 			if(checkpoint_index > 0) printf(",");
